@@ -1,4 +1,5 @@
 const std = @import("std");
+const adma = @import("adma");
 
 const ToyTypeTag = enum {
     Animal,
@@ -37,12 +38,12 @@ const ToyType = union(ToyTypeTag) {
 };
 
 const Toy = struct {
-    serial_number: [10]u8,
+    serial_number: []const u8,
     name: []const u8,
     brand: []const u8,
     price: f32,
     stock: u32,
-    minAge: u7,
+    min_age: u7,
 
     kind: ToyType,
 
@@ -58,7 +59,7 @@ const Toy = struct {
             self.brand,
             self.price,
             self.stock,
-            self.minAge,
+            self.min_age,
         });
 
         switch (self.kind) {
@@ -87,7 +88,8 @@ const Toy = struct {
 
 
 
-fn getSNType(sn: [10]u8) error{InvalidSN}!ToyTypeTag {
+fn getSNType(sn: []const u8) error{InvalidSN}!ToyTypeTag {
+    if(sn.len != 10) return error.InvalidSN;
     switch(sn[0]) {
         '0', '1' => return ToyTypeTag.Figure,
         '2', '3' => return ToyTypeTag.Animal,
@@ -98,34 +100,96 @@ fn getSNType(sn: [10]u8) error{InvalidSN}!ToyTypeTag {
 }
 
 pub fn main() !void {
-    var thing = Toy{
-        .serial_number = "9999999999",
-        .name = "fucky",
-        .brand = "wucky",
-        .price = 420.69,
-        .stock = 666,
-        .minAge = 2,
-        .kind = ToyType{ .Animal = .{
-            .material = "glass",
-            .size = .Small,
+    const adma_ref = adma.AdmaAllocator.init();
+    defer adma_ref.deinit();
 
-        }},
-    };
+    const allocator = &adma_ref.allocator;
 
-    var board_game = Toy{
-        .serial_number = "7897897891",
-        .name = "gay shit",
-        .brand = "big gay inc.",
-        .price = 34.99,
-        .stock = 13,
-        .minAge = 17,
-        .kind = ToyType{ .BoardGame = .{
-            .min_players = 2,
-            .max_players = 6,
-            .designers = "Maximum Overdrive Jacobs"
-        }}
-    };
+    var toys = try getToysFromFile("toys.txt", allocator);
+    defer toys.deinit();
 
-    std.debug.print("Toy: {}\n", .{thing});
-    std.debug.print("\n\n{}\n\n", .{board_game});
+    for (toys.items) |toy| {
+        std.log.info("toy: {s}", .{toy});
+    }
+
+    // std.log.info("{s}", .{toys});
+}
+
+fn getToysFromFile(filename: []const u8, allocator: *std.mem.Allocator) !*std.ArrayList(Toy) {
+    const toy_file = try std.fs.cwd().openFile(
+        filename,
+        .{ .read = true },
+    );
+    defer toy_file.close();
+    
+    const file_content = try toy_file.readToEndAlloc(allocator, (try toy_file.stat()).size);
+    // TODO: figure out how I can free the file content without causing a use after free
+    // defer allocator.free(file_content);
+
+    var toy_list = std.ArrayList(Toy).init(allocator);
+
+    var iter: std.mem.SplitIterator = std.mem.split(file_content, "\n");
+    while (iter.next()) |line| {
+        var toy_iter = std.mem.split(line, ";");
+        
+        var sn = toy_iter.next().?;
+        var name = toy_iter.next().?;
+        var brand = toy_iter.next().?;
+        var price = toy_iter.next().?;
+        var stock = toy_iter.next().?;
+        var min_age = toy_iter.next().?;
+
+        const toy_type: ToyType = switch (try getSNType(sn)) {
+            .Figure => ToyType{ .Figure = .{
+                .classification = switch (toy_iter.next().?[0]) {
+                    'A' => .Action,
+                    'D' => .Doll,
+                    'H' => .Historic,
+                    else => return error.InvalidFigureClass,
+                }},
+            },
+            .Animal => ToyType{ .Animal = .{
+                .material = toy_iter.next().?,
+                .size = switch (toy_iter.next().?[0]) {
+                    'S' => .Small,
+                    'M' => .Medium,
+                    'L' => .Large,
+                    else => return error.InvalidAnimalSize,
+                },
+            }},
+            .Puzzle => ToyType{ .Puzzle = .{
+                .puzzle_type = switch (toy_iter.next().?[0]) {
+                    'M' => .Mechanical,
+                    'C' => .Cryptic,
+                    'L' => .Logic,
+                    'T' => .Trivia,
+                    'R' => .Riddle,
+                    else => return error.InvalidPuzzleType,
+                }
+            }},
+            .BoardGame => blk: {
+                var players = std.mem.split(toy_iter.next().?, "-");
+
+                break :blk ToyType{ .BoardGame = .{
+                    .min_players = try std.fmt.parseUnsigned(u8, players.next().?, 0),
+                    .max_players = try std.fmt.parseUnsigned(u8, players.next().?, 0),
+                    .designers = toy_iter.next().?,
+                }};
+            },
+        };
+
+        const new_toy = Toy {
+            .serial_number = sn,
+            .name = name,
+            .brand = brand,
+            .price = try std.fmt.parseFloat(f32, price),
+            .stock = try std.fmt.parseUnsigned(u32, stock, 0),
+            .min_age = try std.fmt.parseUnsigned(u7, min_age, 0),
+            .kind = toy_type,
+        };
+
+        try toy_list.append(new_toy);
+    }
+
+    return &toy_list;
 }
