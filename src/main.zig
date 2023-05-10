@@ -1,5 +1,4 @@
 const std = @import("std");
-const adma = @import("adma");
 
 const ToyTypeTag = enum {
     Animal,
@@ -50,9 +49,11 @@ const Toy = struct {
     pub fn format(
         self: Toy,
         comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
+        options: anytype,
         writer: anytype,
     ) !void {
+        _ = options;
+        _ = fmt;
         try writer.print("{s};{s};{s};{d:.2};{};{};", .{
             self.serial_number,
             self.name,
@@ -100,37 +101,43 @@ fn getSNType(sn: []const u8) error{InvalidSN}!ToyTypeTag {
 }
 
 pub fn main() !void {
-    const adma_ref = adma.AdmaAllocator.init();
-    defer adma_ref.deinit();
+    var gpa = std.heap.GeneralPurposeAllocator(.{
+        .never_unmap = true,
+        .retain_metadata = true,
+        .verbose_log = true,
+    }){};
 
-    const allocator = &adma_ref.allocator;
+    const allocator = gpa.allocator();
 
-    var toys = try getToysFromFile("toys.txt", allocator);
+    const file_content = try allocFileContents("toys.txt", allocator);
+    defer allocator.free(file_content);
+
+    var toys = try getToysFromFile(file_content, allocator);
     defer toys.deinit();
 
     for (toys.items) |toy| {
-        std.log.info("toy: {s}", .{toy});
+        std.debug.print("toy: {s}\n", .{toy});
     }
-
-    // std.log.info("{s}", .{toys});
 }
 
-fn getToysFromFile(filename: []const u8, allocator: *std.mem.Allocator) !*std.ArrayList(Toy) {
-    const toy_file = try std.fs.cwd().openFile(
+/// Caller owns memory.
+fn allocFileContents(filename: []const u8, ac: std.mem.Allocator) ![]u8 {
+    const f = try std.fs.cwd().openFile(
         filename,
-        .{ .read = true },
+        .{ .mode = .read_only},
     );
-    defer toy_file.close();
+    defer f.close();
     
-    const file_content = try toy_file.readToEndAlloc(allocator, (try toy_file.stat()).size);
-    // TODO: figure out how I can free the file content without causing a use after free
-    // defer allocator.free(file_content);
+    return try f.readToEndAlloc(ac, (try f.stat()).size);
+}
+
+fn getToysFromFile(file_content: []const u8, allocator: std.mem.Allocator) !std.ArrayList(Toy) {
 
     var toy_list = std.ArrayList(Toy).init(allocator);
 
-    var iter: std.mem.SplitIterator = std.mem.split(file_content, "\n");
+    var iter = std.mem.split(u8, file_content, "\n");
     while (iter.next()) |line| {
-        var toy_iter = std.mem.split(line, ";");
+        var toy_iter = std.mem.split(u8, line, ";");
         
         var sn = toy_iter.next().?;
         var name = toy_iter.next().?;
@@ -168,7 +175,7 @@ fn getToysFromFile(filename: []const u8, allocator: *std.mem.Allocator) !*std.Ar
                 }
             }},
             .BoardGame => blk: {
-                var players = std.mem.split(toy_iter.next().?, "-");
+                var players = std.mem.split(u8, toy_iter.next().?, "-");
 
                 break :blk ToyType{ .BoardGame = .{
                     .min_players = try std.fmt.parseUnsigned(u8, players.next().?, 0),
@@ -191,5 +198,5 @@ fn getToysFromFile(filename: []const u8, allocator: *std.mem.Allocator) !*std.Ar
         try toy_list.append(new_toy);
     }
 
-    return &toy_list;
+    return toy_list;
 }
